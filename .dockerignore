@@ -1,0 +1,17 @@
+node_modules
+dist
+.git
+.codex
+.openai
+coverage
+test-results
+playwright-report
+*.log
+*.local
+.env
+.env.*
+README.md
+DEPLOYMENT.md
+artifacts
+test-results
+playwright-report
