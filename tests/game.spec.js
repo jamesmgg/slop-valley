@@ -43,6 +43,7 @@ test("a complete career loop: iterate, custom feedback, launch, hire, upgrade, r
   await page
     .getByRole("button", { name: "Pause simulation", exact: true })
     .click();
+  await page.getByText("Agent notes & market read", { exact: true }).click();
   await expect(
     page.getByText("Your feedback: Fix bugs and simplify for real users"),
   ).toBeVisible();

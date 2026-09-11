@@ -13,6 +13,10 @@ Run a growing stable of AI agents, review their suspiciously enthusiastic ideas,
 
 Press **Space** to pause/resume and **1–8** to select an agent. Reopening a saved career starts paused. Dialogs and hidden tabs pause the simulation. Touching grass restores attention; freelancing rescues your budget. These human actions share a cooldown, which runs while the simulation is playing.
 
+The dark workbench keeps resource balances, agent statuses, and review decisions together. **Next ready** (or **N**) cycles through agents waiting for a review. Enable **Auto-switch after feedback** to move directly to another ready agent after delegating, launching, or binning an idea. Draft prompts stay with their ideas when switching agents.
+
+On mobile, the bottom navigation switches between the workbench, timeline, upgrades, and settings. The persistent action bar keeps shipping and the next review within reach. Feedback buttons show their effect, cash/attention cost, completion time, and a reason when unavailable. Agent notes expand separately from the main decisions.
+
 Custom prompts steer the local simulation through recognizable directions such as “fix bugs,” “simplify,” “interview users,” “pivot,” and “make it viral.” There is no external language model behind the prompt box.
 
 This is a self-contained simulation. It does not call paid AI APIs, post to X, or use real sponsorships. Progress stays in the current browser's local storage; using a different browser or address creates a separate save.

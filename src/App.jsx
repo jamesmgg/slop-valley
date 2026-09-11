@@ -35,6 +35,10 @@ import {
   RotateCcw,
   Clock,
   Eye,
+  MoreHorizontal,
+  ListChecks,
+  ChevronDown,
+  LockKeyhole,
 } from "lucide-react";
 import {
   createGame,
@@ -45,6 +49,7 @@ import {
   getEconomy,
 } from "./game.js";
 import { readSave, writeSave, readFlag } from "./storage.js";
+import { nextReadyAgent, feedbackInfo } from "./workbench.js";
 
 const money = (value) => "$" + Math.floor(value).toLocaleString();
 const count = (value) => Math.floor(value).toLocaleString();
@@ -76,8 +81,8 @@ const modeIcons = {
 };
 const statusText = {
   working: "Cooking",
-  review: "Needs your brain",
-  idle: "Awaiting purpose",
+  review: "Ready to review",
+  idle: "Ready for a task",
 };
 
 function Meter({ label, value, kind = "", hint }) {
@@ -102,6 +107,8 @@ function Modal({ title, eyebrow, children, onClose, className = "" }) {
   const dialog = useRef(null);
   useEffect(() => {
     const prior = document.activeElement;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     const el = dialog.current;
     el?.focus();
     const onKey = (event) => {
@@ -133,6 +140,7 @@ function Modal({ title, eyebrow, children, onClose, className = "" }) {
     document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = previousOverflow;
       prior?.focus();
     };
   }, []);
@@ -172,6 +180,8 @@ function AgentCard({ agent, index, selected, onClick }) {
   return (
     <button
       className={`agent-card ${colors[index]} ${selected ? "selected" : ""}`}
+      data-agent-id={agent.id}
+      data-status={agent.status}
       onClick={onClick}
       aria-pressed={selected}
     >
@@ -198,16 +208,18 @@ function AgentCard({ agent, index, selected, onClick }) {
             <div className="agent-progress">
               <i style={{ width: `${agent.progress}%` }} />
             </div>
-            <span>{Math.round(agent.progress)}%</span>
+            <span className="agent-eta">
+              {Math.ceil(agent.duration * (1 - agent.progress / 100))}s left
+            </span>
           </>
         ) : agent.status === "review" ? (
           <>
-            <span>Output ready for review</span>
+            <span>Review idea</span>
             <ArrowUpRight size={18} />
           </>
         ) : (
           <>
-            <span>Give this bot a job</span>
+            <span>Start next idea</span>
             <Plus size={18} />
           </>
         )}
@@ -273,7 +285,11 @@ export default function App() {
   const [modal, setModal] = useState(null);
   const [tab, setTab] = useState("all");
   const [view, setView] = useState("workbench");
-  const [instruction, setInstruction] = useState("");
+  const [drafts, setDrafts] = useState({});
+  const [autoSwitch, setAutoSwitch] = useState(() =>
+    readFlag(browserStorage, "slop-valley-auto-switch"),
+  );
+  const [readyNotice, setReadyNotice] = useState(null);
   const [tone, setTone] = useState("honest");
   const [category, setCategory] = useState("tools");
   const [muted, setMuted] = useState(true);
@@ -282,8 +298,13 @@ export default function App() {
     () => !readFlag(browserStorage, "slop-valley-tip"),
   );
   const [hidden, setHidden] = useState(document.hidden);
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
   const audio = useRef(null);
   const shopRef = useRef(null);
+  const agentRail = useRef(null);
+  const previousStatuses = useRef({});
+  const previousSelected = useRef(null);
+  const workbench = useRef(null);
   const gameRef = useRef(game);
   gameRef.current = game;
   const economy = getEconomy(game);
@@ -291,6 +312,12 @@ export default function App() {
     game.agents.find((agent) => agent.id === game.selectedAgentId) ||
     game.agents[0];
   const idea = selected?.idea;
+  const draftKey = idea?.id || selected.id;
+  const instruction = drafts[draftKey] || "";
+  const setInstruction = (value) =>
+    setDrafts((current) => ({ ...current, [draftKey]: value }));
+  const nextReady = nextReadyAgent(game, selected.id);
+  const customInfo = feedbackInfo(game, "custom");
   const reviewCount = game.agents.filter(
     (agent) => agent.status === "review",
   ).length;
@@ -302,6 +329,7 @@ export default function App() {
       ? game.agents.filter((agent) => agent.status === "review")
       : game.agents;
   const blocked = Boolean(modal || game.event || hidden);
+  const resultKey = game.lastResult ? JSON.stringify(game.lastResult) : "";
 
   function chime() {
     if (muted) return;
@@ -326,13 +354,66 @@ export default function App() {
     }
   }
   function dispatch(action) {
-    setGame((current) => act(current, action));
+    const completing = ["iterate", "ship", "trash", "start"].includes(
+      action.type,
+    );
+    if (
+      action.type === "spawn" ||
+      (action.type === "select" &&
+        gameRef.current.agents.find((agent) => agent.id === action.id)
+          ?.status !== "review") ||
+      (completing &&
+        !(autoSwitch && nextReadyAgent(gameRef.current, action.id)))
+    )
+      setTab("all");
+    setGame((current) => {
+      let next = act(current, action);
+      if (
+        autoSwitch &&
+        ["iterate", "ship", "trash", "start"].includes(action.type) &&
+        next !== current
+      ) {
+        const candidate = nextReadyAgent(next, action.id);
+        if (candidate) next = act(next, { type: "select", id: candidate.id });
+      }
+      return next;
+    });
     chime();
+  }
+  function goNextReady() {
+    const agent = nextReadyAgent(
+      gameRef.current,
+      gameRef.current.selectedAgentId,
+    );
+    if (agent) {
+      dispatch({ type: "select", id: agent.id });
+      setView("workbench");
+      setReadyNotice(null);
+    }
+  }
+  function openShip() {
+    setTone("honest");
+    setModal("ship");
+  }
+  function navigate(viewName) {
+    setView(viewName);
+    window.scrollTo({ top: 0, behavior: "instant" });
   }
   useEffect(() => {
     const handler = () => setHidden(document.hidden);
     document.addEventListener("visibilitychange", handler);
     return () => document.removeEventListener("visibilitychange", handler);
+  }, []);
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    const handleResize = () =>
+      setKeyboardOpen(
+        window.innerHeight - viewport.height > 150 &&
+          ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName),
+      );
+    viewport.addEventListener("resize", handleResize);
+    return () => viewport.removeEventListener("resize", handleResize);
   }, []);
   useEffect(() => {
     if (blocked || game.paused) return;
@@ -364,22 +445,111 @@ export default function App() {
         const agent = gameRef.current.agents[Number(e.key) - 1];
         if (agent) dispatch({ type: "select", id: agent.id });
       }
+      if (e.key.toLowerCase() === "n") goNextReady();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [modal, game.event, muted]);
   useEffect(() => {
-    setInstruction("");
-  }, [selected?.id]);
+    const rail = agentRail.current;
+    const card = rail?.querySelector(`[data-agent-id="${selected.id}"]`);
+    if (rail && card) {
+      const start =
+        card.getBoundingClientRect().left -
+        rail.getBoundingClientRect().left +
+        rail.scrollLeft;
+      if (
+        start < rail.scrollLeft ||
+        start + card.offsetWidth > rail.scrollLeft + rail.clientWidth
+      ) {
+        rail.scrollTo({
+          left: Math.max(0, start - (rail.clientWidth - card.offsetWidth) / 2),
+          behavior: window.matchMedia("(prefers-reduced-motion: reduce)")
+            .matches
+            ? "instant"
+            : "smooth",
+        });
+      }
+    }
+    if (
+      previousSelected.current &&
+      previousSelected.current !== selected.id &&
+      workbench.current &&
+      window.matchMedia("(max-width: 760px)").matches
+    ) {
+      const topbar = document.querySelector(".topbar");
+      const team = document.querySelector(".agents-section");
+      const offset =
+        (topbar?.offsetHeight || 0) +
+        (team && getComputedStyle(team).position === "sticky"
+          ? team.offsetHeight
+          : 0) +
+        12;
+      const rect = workbench.current.getBoundingClientRect();
+      if (rect.top < offset || rect.top > window.innerHeight * 0.75)
+        window.scrollTo({
+          top: Math.max(0, window.scrollY + rect.top - offset),
+          behavior: window.matchMedia("(prefers-reduced-motion: reduce)")
+            .matches
+            ? "instant"
+            : "smooth",
+        });
+    }
+    previousSelected.current = selected.id;
+  }, [selected.id, tab, view]);
+  useEffect(() => {
+    const finished = game.agents.filter(
+      (agent) =>
+        agent.status === "review" &&
+        previousStatuses.current[agent.id] === "working",
+    );
+    if (finished.length) {
+      setReadyNotice({
+        id: finished[0].id,
+        text:
+          finished.length > 1
+            ? `${finished.length} agents finished. Your move.`
+            : `${finished[0].name} is ready.`,
+      });
+      chime();
+    }
+    previousStatuses.current = Object.fromEntries(
+      game.agents.map((agent) => [agent.id, agent.status]),
+    );
+  }, [game.agents]);
+  useEffect(() => {
+    if (!readyNotice) return;
+    const timer = setTimeout(() => setReadyNotice(null), 6000);
+    return () => clearTimeout(timer);
+  }, [readyNotice]);
+  useEffect(() => {
+    if (!game.lastResult || modal || game.event) return;
+    const timer = setTimeout(
+      () =>
+        setGame((current) =>
+          JSON.stringify(current.lastResult) === resultKey
+            ? act(current, { type: "dismissResult" })
+            : current,
+        ),
+      6500,
+    );
+    return () => clearTimeout(timer);
+  }, [resultKey, modal, game.event]);
 
   function iterate(mode) {
+    if (
+      feedbackInfo(game, mode).disabled ||
+      selected.status !== "review" ||
+      (mode === "custom" && !instruction.trim())
+    )
+      return;
     dispatch({
       type: "iterate",
       id: selected.id,
       mode,
       ...(mode === "custom" ? { instruction } : {}),
     });
-    setInstruction("");
+    if (mode === "custom") setInstruction("");
   }
   const rank =
     game.followers >= 10000
@@ -391,8 +561,10 @@ export default function App() {
           : "Indie hacker, allegedly";
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
+    <div
+      className={`app-shell view-${view} ${view === "workbench" ? "has-action-dock" : ""} ${keyboardOpen ? "keyboard-open" : ""}`}
+    >
+      <aside className="sidebar" inert={modal || game.event ? true : undefined}>
         <a
           className="brand"
           href="#"
@@ -471,7 +643,10 @@ export default function App() {
         </div>
       </aside>
 
-      <div className="main-shell">
+      <div
+        className="main-shell"
+        inert={modal || game.event ? true : undefined}
+      >
         <header className="topbar">
           <div className="day-chip">
             <span className="day-dot" />
@@ -515,7 +690,7 @@ export default function App() {
                 <i
                   style={{
                     height: `${game.attention}%`,
-                    background: game.attention < 25 ? "#d64c2b" : "#8871df",
+                    background: game.attention < 25 ? "#ff8d9a" : "#a39bfa",
                   }}
                 />
               </div>
@@ -531,10 +706,13 @@ export default function App() {
             </button>
             <button
               className="icon-button help-mobile"
-              aria-label="How to play"
-              onClick={() => setModal("help")}
+              aria-label={
+                game.paused ? "Resume simulation" : "Pause simulation"
+              }
+              aria-pressed={game.paused}
+              onClick={() => dispatch({ type: "pause" })}
             >
-              <HelpCircle size={18} />
+              {game.paused ? <Play size={18} /> : <Pause size={18} />}
             </button>
           </div>
         </header>
@@ -553,7 +731,7 @@ export default function App() {
               <h1>
                 {view === "history"
                   ? "Receipts of the grind."
-                  : "Big ideas. Little oversight."}
+                  : "Mission control."}
               </h1>
               <p>
                 {view === "history"
@@ -590,8 +768,7 @@ export default function App() {
           {game.paused && (
             <div className="pause-banner">
               <Pause size={16} />
-              The grind is paused. Your agents have discovered work-life
-              balance.
+              Paused. Ready when your brain is.
               <button onClick={() => dispatch({ type: "pause" })}>
                 Resume <Play size={13} />
               </button>
@@ -603,9 +780,8 @@ export default function App() {
                 <Sparkles size={19} />
               </span>
               <p>
-                <strong>Welcome to middle management.</strong> Select an agent,
-                inspect its idea, then improve it or ship it to X. Better
-                launches fund more agents.
+                <strong>Review. Refine. Risk it.</strong> Pick a ready agent.
+                Improve the idea, then ship it to grow your audience.
               </p>
               <button
                 onClick={() => {
@@ -646,10 +822,10 @@ export default function App() {
                   </div>
                   <span className="parallel-count">
                     <Radio size={14} />
-                    {workingCount} running in parallel
+                    {workingCount} cooking
                   </span>
                 </div>
-                <div className="agent-grid">
+                <div className="agent-grid" ref={agentRail}>
                   {filteredAgents.map((agent) => (
                     <AgentCard
                       key={agent.id}
@@ -681,16 +857,89 @@ export default function App() {
                         {money(economy.spawnCost)} <ArrowUpRight size={14} />
                       </b>
                       <small>
-                        {game.agents.length} / {economy.maxAgents} agent seats
+                        {game.cash < economy.spawnCost
+                          ? `Need ${money(economy.spawnCost - game.cash)} more`
+                          : `${game.agents.length} / ${economy.maxAgents} agent seats`}
                       </small>
                     </button>
                   )}
                 </div>
               </section>
 
+              <div className="queue-toolbar">
+                <div className="queue-summary">
+                  <ListChecks size={18} />
+                  <strong>{reviewCount} ready</strong>
+                  <span>
+                    {workingCount} cooking ·{" "}
+                    {
+                      game.agents.filter((agent) => agent.status === "idle")
+                        .length
+                    }{" "}
+                    idle
+                  </span>
+                </div>
+                <label className="auto-switch-label">
+                  <input
+                    type="checkbox"
+                    checked={autoSwitch}
+                    onChange={(e) => {
+                      setAutoSwitch(e.target.checked);
+                      try {
+                        browserStorage?.setItem(
+                          "slop-valley-auto-switch",
+                          e.target.checked ? "1" : "0",
+                        );
+                      } catch {
+                        /* Optional preference. */
+                      }
+                    }}
+                  />
+                  Auto-switch after feedback
+                </label>
+                <button
+                  className="next-review-button desktop-next"
+                  aria-label="Next ready agent"
+                  disabled={!nextReady}
+                  onClick={goNextReady}
+                >
+                  <span>
+                    {nextReady
+                      ? "Next ready"
+                      : selected.status === "review"
+                        ? "No other reviews"
+                        : "All caught up"}
+                  </span>
+                  <ArrowRight size={17} />
+                </button>
+              </div>
+
+              {readyNotice &&
+                game.agents.some(
+                  (agent) =>
+                    agent.id === readyNotice.id && agent.status === "review",
+                ) && (
+                  <button
+                    className="ready-notice"
+                    onClick={() => {
+                      dispatch({ type: "select", id: readyNotice.id });
+                      setReadyNotice(null);
+                    }}
+                  >
+                    <Check size={16} />
+                    <span>{readyNotice.text}</span>
+                    <strong>Review</strong>
+                    <ArrowRight size={16} />
+                  </button>
+                )}
+
               <div className="work-layout">
                 <div className="work-column">
-                  <section className="review-panel" aria-label="Idea workbench">
+                  <section
+                    className="review-panel"
+                    aria-label="Idea workbench"
+                    ref={workbench}
+                  >
                     <div className="panel-title">
                       <div>
                         <span className="panel-icon">
@@ -756,6 +1005,12 @@ export default function App() {
                           Start a new idea{" "}
                           <span>{money(economy.startCost)}</span>
                         </button>
+                        {game.cash < economy.startCost && (
+                          <p className="action-blocked">
+                            Need {money(economy.startCost - game.cash)} more. A
+                            freelance gig can cover it.
+                          </p>
+                        )}
                       </div>
                     ) : (
                       idea && (
@@ -798,52 +1053,82 @@ export default function App() {
                               kind="hype"
                             />
                           </div>
-                          <div className="agent-output">
-                            <div>
-                              <Terminal size={15} />
-                              <strong>{selected.name} says</strong>
-                              <span>
-                                {selected.status === "working"
-                                  ? "streaming questionable thoughts"
-                                  : "output complete"}
-                              </span>
-                            </div>
-                            <p>
-                              “
-                              {selected.log ||
-                                idea.notes?.at(-1) ||
-                                "I have completed the task. Please do not inspect the implementation."}
-                              ”
-                            </p>
-                            {selected.status === "review" &&
-                              idea.notes?.length > 0 && (
-                                <p className="review-note">
-                                  {idea.notes.at(-1)}
-                                </p>
-                              )}
-                            {idea.lastInstruction && (
-                              <small>
-                                Your feedback: {idea.lastInstruction}
-                              </small>
+                          <div
+                            className={`decision-summary ${idea.quality >= 70 && idea.potential >= 60 ? "promising" : ""}`}
+                          >
+                            {idea.quality >= 70 && idea.potential >= 60 ? (
+                              <Rocket size={17} />
+                            ) : (
+                              <FlaskConical size={17} />
                             )}
-                          </div>
-                          <div className="market-hint">
-                            <Eye size={16} />
                             <span>
                               <strong>
-                                Market opportunity:{" "}
-                                {idea.potential >= 70
-                                  ? "a real opening"
-                                  : idea.potential >= 40
-                                    ? "somebody might want this"
-                                    : "a solution looking for a problem"}
-                                .
-                              </strong>{" "}
-                              {idea.potential >= 70
-                                ? "The audience is interested. Give them something that works."
-                                : "Polish helps execution. A pivot can change the market."}
+                                {idea.quality < 55
+                                  ? "Fix the product before the pitch."
+                                  : idea.potential < 50
+                                    ? "Find a customer before a cofounder."
+                                    : idea.quality >= 70
+                                      ? "Worth an honest launch."
+                                      : "Promising. One more polish could help."}
+                              </strong>
+                              <small>
+                                {game.attention < 30
+                                  ? "Low attention hurts launch odds. A break will help."
+                                  : `Market fit ${Math.round(idea.potential)}/100 · ${idea.iteration || 0} revisions · no guarantees, naturally.`}
+                              </small>
                             </span>
                           </div>
+                          <details className="review-details" key={idea.id}>
+                            <summary>
+                              Agent notes &amp; market read{" "}
+                              <ChevronDown size={16} />
+                            </summary>
+                            <div className="agent-output">
+                              <div>
+                                <Terminal size={15} />
+                                <strong>{selected.name} says</strong>
+                                <span>
+                                  {selected.status === "working"
+                                    ? "streaming questionable thoughts"
+                                    : "output complete"}
+                                </span>
+                              </div>
+                              <p>
+                                “
+                                {selected.log ||
+                                  idea.notes?.at(-1) ||
+                                  "I have completed the task. Please do not inspect the implementation."}
+                                ”
+                              </p>
+                              {idea.notes?.map((note, index) => (
+                                <p className="review-note" key={index}>
+                                  {note}
+                                </p>
+                              ))}
+                              {idea.lastInstruction && (
+                                <small>
+                                  Your feedback: {idea.lastInstruction}
+                                </small>
+                              )}
+                            </div>
+                            <div className="market-hint">
+                              <Eye size={16} />
+                              <span>
+                                <strong>
+                                  Market opportunity:{" "}
+                                  {idea.potential >= 70
+                                    ? "a real opening"
+                                    : idea.potential >= 40
+                                      ? "somebody might want this"
+                                      : "a solution looking for a problem"}
+                                  .
+                                </strong>{" "}
+                                {idea.potential >= 70
+                                  ? "The audience is interested. Give them something that works."
+                                  : "Polish helps execution. A pivot can change the market."}
+                              </span>
+                            </div>
+                          </details>
                           {selected.status === "working" ? (
                             <div className="working-view">
                               <div className="working-heading">
@@ -861,9 +1146,24 @@ export default function App() {
                                 <i style={{ width: `${selected.progress}%` }} />
                               </div>
                               <p>
-                                You have been promoted to waiting. Check another
-                                agent while this one works.
+                                {Math.ceil(
+                                  selected.duration *
+                                    (1 - selected.progress / 100),
+                                )}{" "}
+                                simulation seconds left.{" "}
+                                {nextReady
+                                  ? `${nextReady.name} is ready for you.`
+                                  : "Your other agents are on it. Allegedly."}
                               </p>
+                              {nextReady && (
+                                <button
+                                  className="secondary-button"
+                                  onClick={goNextReady}
+                                >
+                                  Review {nextReady.name}
+                                  <ArrowRight size={16} />
+                                </button>
+                              )}
                             </div>
                           ) : (
                             <div className="iteration-controls">
@@ -876,25 +1176,36 @@ export default function App() {
                                   (mode) => {
                                     const descriptor = ACTIONS[mode];
                                     const Icon = modeIcons[mode];
+                                    const info = feedbackInfo(game, mode);
                                     return (
                                       <button
                                         key={mode}
                                         className="quick-action"
-                                        title={descriptor.description}
-                                        disabled={
-                                          game.cash < descriptor.cost ||
-                                          game.attention <
-                                            economy.attentionCosts[mode]
-                                        }
+                                        aria-describedby={`action-${mode}-reason`}
+                                        disabled={info.disabled}
                                         onClick={() => iterate(mode)}
                                       >
                                         <Icon size={19} />
                                         <strong>{descriptor.label}</strong>
-                                        <span>
-                                          {money(descriptor.cost)}{" "}
-                                          <span>·</span>{" "}
-                                          {economy.attentionCosts[mode]}{" "}
-                                          attention
+                                        <span className="action-description">
+                                          {info.effect}
+                                        </span>
+                                        <span className="action-cost">
+                                          {money(info.cost)} · {info.attention}{" "}
+                                          attention · {info.seconds}s
+                                        </span>
+                                        <span
+                                          id={`action-${mode}-reason`}
+                                          className={
+                                            info.disabled
+                                              ? "action-blocked"
+                                              : "sr-only"
+                                          }
+                                        >
+                                          {info.disabled && (
+                                            <LockKeyhole size={12} />
+                                          )}
+                                          {info.reason || "Available now"}
                                         </span>
                                       </button>
                                     );
@@ -911,32 +1222,42 @@ export default function App() {
                                 <Terminal size={17} />
                                 <input
                                   aria-label="Custom agent feedback"
+                                  aria-describedby="custom-feedback-hint"
                                   value={instruction}
                                   maxLength={240}
                                   onChange={(e) =>
                                     setInstruction(e.target.value)
                                   }
-                                  placeholder="Your own feedback: “add tests and make it useful…”"
+                                  placeholder="Try “fix bugs and simplify…”"
                                 />
                                 <button
-                                  title={`Send feedback (${money(ACTIONS.custom.cost)})`}
                                   aria-label="Send custom feedback"
+                                  aria-describedby="custom-feedback-hint"
                                   disabled={
-                                    !instruction.trim() ||
-                                    game.cash < ACTIONS.custom.cost ||
-                                    game.attention <
-                                      economy.attentionCosts.custom
+                                    !instruction.trim() || customInfo.disabled
                                   }
                                 >
-                                  <ArrowRight size={19} />
+                                  <Send size={18} />
+                                  <span>Send</span>
                                 </button>
                               </form>
-                              <div className="custom-hint">
-                                Custom prompts steer the simulation: try “test”,
-                                “simplify”, “pivot”, or “viral”.{" "}
-                                {money(ACTIONS.custom.cost)} /{" "}
-                                {economy.attentionCosts.custom} attention.
+                              <div
+                                className="custom-hint"
+                                id="custom-feedback-hint"
+                              >
+                                {customInfo.disabled
+                                  ? customInfo.reason
+                                  : `${money(customInfo.cost)} · ${customInfo.attention} attention · ${customInfo.seconds}s. ${instruction.trim() ? "Draft kept when you switch agents." : "Type your feedback to enable Send."}`}
                               </div>
+                              <button
+                                className="trash-button mobile-only inline-bin"
+                                onClick={() =>
+                                  dispatch({ type: "trash", id: selected.id })
+                                }
+                              >
+                                <Trash2 size={16} />
+                                Bin the slop <span>+5 attention</span>
+                              </button>
                               <div className="ship-row">
                                 <button
                                   className="trash-button"
@@ -949,10 +1270,7 @@ export default function App() {
                                 </button>
                                 <button
                                   className="ship-button"
-                                  onClick={() => {
-                                    setTone("honest");
-                                    setModal("ship");
-                                  }}
+                                  onClick={openShip}
                                 >
                                   <Rocket size={18} />
                                   Ship it to X <ArrowUpRight size={18} />
@@ -1041,8 +1359,14 @@ export default function App() {
                     <h3>Runway looking short?</h3>
                     <p>A client needs their button moved 3px.</p>
                   </div>
-                  <button onClick={() => dispatch({ type: "grant" })}>
-                    Freelance <span>+ $150 · 45s</span>
+                  <button
+                    disabled={economy.humanCooldown > 0}
+                    onClick={() => dispatch({ type: "grant" })}
+                  >
+                    {economy.humanCooldown > 0
+                      ? `Available in ${Math.ceil(economy.humanCooldown)}s`
+                      : "Freelance"}{" "}
+                    <span>+ $150 · 45s</span>
                   </button>
                 </div>
               </section>
@@ -1066,6 +1390,19 @@ export default function App() {
                   <span>Slop responsibly recycled</span>
                 </div>
               </div>
+              {game.achievements.length > 0 && (
+                <div
+                  className="achievement-list"
+                  aria-label="Career achievements"
+                >
+                  {game.achievements.map((badge) => (
+                    <span key={badge}>
+                      <Trophy size={15} />
+                      {badge}
+                    </span>
+                  ))}
+                </div>
+              )}
               <h2>The public record</h2>
               {game.feed.length ? (
                 game.feed.map((item) => <FeedItem key={item.id} item={item} />)
@@ -1101,6 +1438,99 @@ export default function App() {
           </footer>
         </main>
       </div>
+
+      {view === "workbench" && (
+        <div
+          className="mobile-action-dock"
+          inert={modal || game.event ? true : undefined}
+        >
+          <button
+            className="next-review-button"
+            aria-label="Next ready agent"
+            disabled={!nextReady}
+            onClick={goNextReady}
+          >
+            <ListChecks size={18} />
+            <span>
+              {nextReady
+                ? "Next ready"
+                : selected.status === "review"
+                  ? "No other reviews"
+                  : "All caught up"}
+            </span>
+            {nextReady && (
+              <b>
+                {
+                  game.agents.filter(
+                    (agent) =>
+                      agent.status === "review" && agent.id !== selected.id,
+                  ).length
+                }
+              </b>
+            )}
+          </button>
+          {selected.status === "review" ? (
+            <button className="ship-button" onClick={openShip}>
+              <Rocket size={18} />
+              Ship it to X
+            </button>
+          ) : selected.status === "idle" ? (
+            <button
+              className="primary-button"
+              disabled={game.cash < economy.startCost}
+              onClick={() =>
+                dispatch({ type: "start", id: selected.id, category })
+              }
+            >
+              <Play size={17} />
+              {game.cash < economy.startCost
+                ? `Need ${money(economy.startCost - game.cash)} more`
+                : `New idea · ${money(economy.startCost)}`}
+            </button>
+          ) : (
+            <div className="dock-working">
+              <span className="spinner" />
+              <span>
+                Cooking
+                <strong>
+                  {Math.ceil(selected.duration * (1 - selected.progress / 100))}
+                  s left
+                </strong>
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+      <nav
+        className="mobile-nav"
+        aria-label="Mobile navigation"
+        inert={modal || game.event ? true : undefined}
+      >
+        <button
+          aria-label="Workbench"
+          aria-current={view === "workbench" ? "page" : undefined}
+          onClick={() => navigate("workbench")}
+        >
+          <Command size={20} />
+          <span>Workbench</span>
+          {reviewCount > 0 && <b>{reviewCount}</b>}
+        </button>
+        <button
+          aria-current={view === "history" ? "page" : undefined}
+          onClick={() => navigate("history")}
+        >
+          <Radio size={20} />
+          <span>Timeline</span>
+        </button>
+        <button onClick={() => setModal("upgrades")}>
+          <Zap size={20} />
+          <span>Upgrades</span>
+        </button>
+        <button onClick={() => setModal("more")}>
+          <MoreHorizontal size={21} />
+          <span>More</span>
+        </button>
+      </nav>
 
       {game.lastResult && !modal && !game.event && (
         <div className={"result-toast " + game.lastResult.kind} role="status">
@@ -1238,6 +1668,7 @@ export default function App() {
                 </div>
                 <button
                   className="primary-button"
+                  aria-label={`Upgrade ${upgrade.label}`}
                   disabled={
                     level >= upgrade.maxLevel ||
                     game.cash < economy.upgradeCosts[key]
@@ -1246,7 +1677,9 @@ export default function App() {
                 >
                   {level >= upgrade.maxLevel
                     ? "Maxed out"
-                    : money(economy.upgradeCosts[key])}
+                    : game.cash < economy.upgradeCosts[key]
+                      ? `Need ${money(economy.upgradeCosts[key] - game.cash)} more`
+                      : `Upgrade ${money(economy.upgradeCosts[key])}`}
                   {level < upgrade.maxLevel && <Plus size={14} />}
                 </button>
               </div>
@@ -1273,13 +1706,56 @@ export default function App() {
             >
               {game.agents.length >= economy.maxAgents
                 ? "Full house"
-                : money(economy.spawnCost)}
+                : game.cash < economy.spawnCost
+                  ? `Need ${money(economy.spawnCost - game.cash)} more`
+                  : `Hire ${money(economy.spawnCost)}`}
               <Plus size={14} />
             </button>
           </div>
           <p className="modal-footnote">
             Sponsorship income grows with your audience. Each game day lasts 60
             simulation seconds.
+          </p>
+        </Modal>
+      )}
+
+      {modal === "more" && (
+        <Modal
+          title="The human settings."
+          eyebrow="Management, but make it manageable"
+          onClose={() => setModal(null)}
+        >
+          <div className="mobile-goal">
+            <Trophy size={26} />
+            <div>
+              <strong>{compact(game.followers)} / 10k followers</strong>
+              <p>
+                {game.hits} / 3 breakout launches. Become too big to fact-check.
+              </p>
+            </div>
+          </div>
+          <div className="more-actions">
+            <button onClick={() => setModal("help")}>
+              <HelpCircle size={20} />
+              <span>How to play</span>
+              <ChevronRight size={17} />
+            </button>
+            <button onClick={() => setMuted(!muted)}>
+              {muted ? <VolumeX size={20} /> : <Volume2 size={20} />}
+              <span>{muted ? "Enable sound" : "Mute sound"}</span>
+              <span>{muted ? "Off" : "On"}</span>
+            </button>
+            <button onClick={() => setModal("reset")}>
+              <RotateCcw size={20} />
+              <span>New career</span>
+              <ChevronRight size={17} />
+            </button>
+          </div>
+          <p className="modal-footnote">
+            {saved
+              ? "Your career saves automatically in this browser."
+              : "Storage is blocked in this browser. Your career will not persist after closing."}{" "}
+            Dark mode. Lighter responsibilities sold separately.
           </p>
         </Modal>
       )}
@@ -1298,7 +1774,10 @@ export default function App() {
                 <p>
                   Agents generate ideas in parallel. Select a colorful agent
                   card to see what it’s doing. More seats mean more shots at a
-                  hit.
+                  hit. Next ready jumps to an agent waiting for a review. Enable
+                  auto-switch to move to the next review after giving feedback,
+                  shipping, or binning an idea. Your draft prompts stay with
+                  each idea while you switch.
                 </p>
               </span>
             </div>
@@ -1357,6 +1836,9 @@ export default function App() {
             <span>
               <kbd>1</kbd>–<kbd>8</kbd> Select agent
             </span>
+            <span>
+              <kbd>N</kbd> Next ready
+            </span>
           </div>
           <p className="modal-footnote">
             Autosaved locally. Reopening the game starts paused. Time also
@@ -1392,6 +1874,8 @@ export default function App() {
                 setGame(createGame());
                 setView("workbench");
                 setTab("all");
+                setDrafts({});
+                setReadyNotice(null);
                 setModal(null);
               }}
             >
