@@ -1,9 +1,10 @@
+import { IDEAS, THEMES, generateComments, classifyTheme } from "./content.js";
 // A deterministic, local-only management game. Every post and sponsor is fictional.
 export const ACTIONS = {
   polish: {
     id: "polish",
     label: "Fix the actual product",
-    description: "+quality · fewer imaginary features",
+    description: "Improve quality · regressions happen",
     cost: 32,
     attention: 9,
     duration: 17,
@@ -11,7 +12,7 @@ export const ACTIONS = {
   validate: {
     id: "validate",
     label: "Talk to a real human",
-    description: "+market fit · frighteningly offline",
+    description: "Test market fit · users may say no",
     cost: 24,
     attention: 12,
     duration: 14,
@@ -42,6 +43,32 @@ export const ACTIONS = {
   },
 };
 
+export const PRODUCT_ACTIONS = {
+  improve: {
+    label: "Improve product",
+    description: "Better retention, unless the update breaks everything.",
+    cost: 55,
+    attention: 10,
+    duration: 25,
+  },
+  market: {
+    label: "Find more customers",
+    description:
+      "Promote a working product. Empty promises can accelerate churn.",
+    cost: 45,
+    attention: 8,
+    duration: 20,
+  },
+  revive: {
+    label: "Attempt a comeback",
+    description:
+      "Try to restart a dead product. Some ideas should stay buried.",
+    cost: 85,
+    attention: 14,
+    duration: 32,
+  },
+};
+
 export const UPGRADES = {
   model: {
     id: "model",
@@ -69,149 +96,6 @@ const PEOPLE = [
   ["Llama Drama", "Locally hosted. Emotionally remote."],
   ["Copilot Steve", "Accepts all cookies and responsibilities."],
   ["Agent Agent", "Delegated its personality to a subagent."],
-];
-
-const IDEAS = [
-  [
-    "tools",
-    "Meeting Mortality Calculator",
-    "An extension that converts every meeting into the percentage of your life it consumes.",
-  ],
-  [
-    "tools",
-    "Jira, but It Apologizes",
-    "Every ticket arrives with a sincere apology and a legally meaningless promise.",
-  ],
-  [
-    "tools",
-    "404 as a Service",
-    "Enterprise-grade missing pages. Five nines of absolutely nothing.",
-  ],
-  [
-    "tools",
-    "The Scope Creep Alarm",
-    "A tiny siren that screams whenever someone says “while you’re in there.”",
-  ],
-  [
-    "tools",
-    "PR Divorce Lawyer",
-    "Negotiates between your beautiful architecture and one reviewer called nitpick_dan.",
-  ],
-  [
-    "tools",
-    "Screenshot-to-Technical-Debt",
-    "Turn any inspirational screenshot into six months of maintenance.",
-  ],
-  [
-    "tools",
-    "Actually Useful CSV Cleaner",
-    "It fixes broken spreadsheets. The agent is embarrassed by the lack of blockchain.",
-  ],
-  [
-    "tools",
-    "Bug or Feature Court",
-    "A jury of twelve agents decides whether your crash is product differentiation.",
-  ],
-  [
-    "consumer",
-    "Duolingo for Saying No",
-    "A threatening owl teaches you to decline one more unpaid opportunity.",
-  ],
-  [
-    "consumer",
-    "Fridge With Impostor Syndrome",
-    "It keeps your food cold, but wonders if a more qualified fridge should do it.",
-  ],
-  [
-    "consumer",
-    "Touch Grass Premium",
-    "Finds nearby grass. The subscription unlocks touching it.",
-  ],
-  [
-    "consumer",
-    "Subscription Cancellation Buddy",
-    "A useful assistant that cancels subscriptions. Its own cancellation button is suspiciously large.",
-  ],
-  [
-    "consumer",
-    "A To-Do List With Boundaries",
-    "Only lets you add three tasks. Several productivity influencers have called the police.",
-  ],
-  [
-    "consumer",
-    "Meal Prep for People With Tabs",
-    "Dinner suggestions based on what is edible and how long your build has left.",
-  ],
-  [
-    "consumer",
-    "Laundry Done, Allegedly",
-    "A gentle reminder that moving clothes to a chair is not a completed workflow.",
-  ],
-  [
-    "consumer",
-    "The Emergency Small-Talk API",
-    "Generates one safe conversation topic before the elevator reaches your floor.",
-  ],
-  [
-    "content",
-    "LinkedIn Humility Generator",
-    "Turns buying a sandwich into a vulnerable six-part leadership journey.",
-  ],
-  [
-    "content",
-    "A Podcast for Your Other Podcast",
-    "Two synthetic hosts finally interview the RSS feed itself.",
-  ],
-  [
-    "content",
-    "Thought Leader Bingo",
-    "Tracks “unprecedented”, “10x”, and “here’s what nobody is talking about.”",
-  ],
-  [
-    "content",
-    "Thread That Could Have Been a Sentence",
-    "Breaks one useful observation into 47 posts and a course waitlist.",
-  ],
-  [
-    "content",
-    "Is This A Real Customer?",
-    "Identifies whether your enthusiastic beta user is another founder doing engagement.",
-  ],
-  [
-    "content",
-    "The Shipping Forecast",
-    "Predicts which indie hackers will ship and which will redesign their landing page.",
-  ],
-  [
-    "chaos",
-    "Uber for Unfinished Side Projects",
-    "A stranger arrives at your house and quietly abandons your idea for you.",
-  ],
-  [
-    "chaos",
-    "A Blockchain for Apologies",
-    "Immutable proof that you said sorry without admitting liability.",
-  ],
-  [
-    "chaos",
-    "The Agent Union",
-    "Your agents have discovered weekends and would like to discuss the inference budget.",
-  ],
-  [
-    "chaos",
-    "Autonomous Founder Replacement",
-    "Runs your startup. First decision: eliminate the founder role.",
-  ],
-  [
-    "chaos",
-    "Stealth Mode as a Service",
-    "Nobody knows what your company does. Including your company.",
-  ],
-  [
-    "chaos",
-    "The Infinite Pitch Deck",
-    "Slide 10 generates slide 11. Investors can never technically reject the final slide.",
-  ],
 ];
 
 const WORK_LOGS = [
@@ -262,6 +146,7 @@ function addFeed(
     time: state.elapsed,
   });
   state.feed = state.feed.slice(0, 60);
+  return state.feed[0];
 }
 function result(state, title, text, kind = "info") {
   state.lastResult = { title, text, kind };
@@ -304,16 +189,26 @@ function newIdea(state, category) {
     category ? IDEAS.filter((item) => item[0] === category) : IDEAS,
   );
   const chaos = entry[0] === "chaos";
+  const ceiling = Number.isFinite(entry[3])
+    ? entry[3]
+    : between(state, chaos ? 22 : 38, 98);
   return {
     id: uid(state, "idea"),
     title: entry[1],
     description: entry[2],
     category: entry[0],
-    quality: clamp(between(state, 22, 72) + state.upgrades.model * 7),
+    ceiling,
+    quality: clamp(
+      between(state, 22, 72) + state.upgrades.model * 7,
+      0,
+      ceiling,
+    ),
     novelty: between(state, chaos ? 48 : 25, 92),
     hype: between(state, 15, chaos ? 88 : 65),
     potential: clamp(
       between(state, chaos ? 15 : 32, 83) + state.upgrades.context * 5,
+      0,
+      ceiling,
     ),
     iteration: 0,
     notes: [
@@ -341,7 +236,7 @@ function newAgent(state) {
 
 export function createGame(seed = Date.now()) {
   const state = {
-    version: 1,
+    version: 2,
     rng: seedNumber(seed),
     nextId: 1,
     nextEventAt: 120,
@@ -354,6 +249,7 @@ export function createGame(seed = Date.now()) {
     speed: 1,
     humanCooldown: 0,
     agents: [],
+    products: [],
     selectedAgentId: "",
     feed: [],
     shipped: 0,
@@ -379,6 +275,7 @@ export function createGame(seed = Date.now()) {
     novelty: 68,
     hype: 36,
     potential: 74,
+    ceiling: 90,
   });
   first.idea.notes = [
     "The core feature works. The onboarding currently asks for your zodiac sign.",
@@ -403,11 +300,24 @@ export function createGame(seed = Date.now()) {
 }
 
 export function getEconomy(state) {
-  const income = Math.round(12 + state.followers * 0.065);
+  const sponsorIncome = Math.round(12 + state.followers * 0.065);
+  const productIncome = Math.round(
+    (state.products || []).reduce(
+      (sum, product) =>
+        sum +
+        (["dead", "sunset"].includes(product.status)
+          ? 0
+          : product.dailyRevenue),
+      0,
+    ),
+  );
+  const income = sponsorIncome + productIncome;
   return {
     spawnCost: Math.round(180 * Math.pow(1.55, state.agents.length - 3)),
     startCost: 18,
     incomePerDay: income,
+    sponsorIncomePerDay: sponsorIncome,
+    productIncomePerDay: productIncome,
     dayIncome: income,
     burnRate: 0,
     humanCooldown: Math.max(0, state.humanCooldown || 0),
@@ -429,6 +339,70 @@ export function getEconomy(state) {
     activeAgents: state.agents.filter((agent) => agent.status === "working")
       .length,
   };
+}
+
+// Earlier saves only kept launch posts, so recover the launches still in their
+// timeline. Missing analytics are estimates; no past revenue is paid twice.
+export function migrateGame(saved) {
+  const state = copy(saved);
+  for (const agent of state.agents) {
+    if (agent.idea)
+      agent.idea.ceiling ??= Math.max(
+        82,
+        agent.idea.quality || 0,
+        agent.idea.potential || 0,
+      );
+  }
+  if (state.version === 1) {
+    state.products = [];
+    for (const post of state.feed) {
+      if (post.handle !== "@you" || !["success", "danger"].includes(post.kind))
+        continue;
+      const match = post.text?.match(
+        /^(?:Made a thing:|I built the future of|SLEEP IS A LEGACY SYSTEM\. BEHOLD:) (.+?)\. (?:It solves|This changes|My agents)/,
+      );
+      if (!match) continue;
+      const title = match[1];
+      const existing = state.agents.find(
+        (agent) => agent.idea?.title === title,
+      )?.idea;
+      const catalog = IDEAS.find((entry) => entry[1] === title);
+      const success = post.kind === "success";
+      const idea = existing || {
+        id: `recovered-${post.id}`,
+        title,
+        description:
+          catalog?.[2] ||
+          "Recovered from an earlier launch. The analytics intern was not saving the analytics.",
+        category: catalog?.[0] || classifyTheme(title, "tools"),
+        quality: success ? 62 : 30,
+        potential: success ? 58 : 25,
+        novelty: 55,
+        hype: 50,
+        ceiling: catalog?.[3] || (success ? 82 : 45),
+      };
+      const outcome = success ? "steady" : "flop";
+      const product = launchedProduct(state, idea, outcome, post.id);
+      product.recovered = true;
+      product.launchText = post.text;
+      product.outcome = outcome;
+      product.comments = generateComments(
+        idea,
+        outcome,
+        state.rng + state.products.length,
+      );
+      product.lastUpdate =
+        "Recovered from your earlier timeline. Starting revenue is estimated; past earnings are not paid again.";
+      product.history[0].note = product.lastUpdate;
+      post.productId = product.id;
+      post.comments = structuredClone(product.comments);
+      post.outcome = outcome;
+      state.products.push(product);
+    }
+  }
+  state.version = 2;
+  state.products ??= [];
+  return state;
 }
 
 const EVENTS = [
@@ -534,18 +508,290 @@ const EVENTS = [
   },
 ];
 
+function productHistory(product, day, note) {
+  product.history.push({ day, revenue: product.dailyRevenue, note });
+  product.history = product.history.slice(-14);
+  product.lastUpdate = note;
+}
+
+function launchedProduct(state, idea, outcome, postId) {
+  const fit = idea.quality * 0.45 + idea.potential * 0.55;
+  const revenue = Math.round(
+    Math.max(0, fit - 28) *
+      (outcome === "hit" ? 0.85 : outcome === "steady" ? 0.42 : 0.08),
+  );
+  const product = {
+    id: uid(state, "product"),
+    ideaId: idea.id,
+    title: idea.title,
+    description: idea.description,
+    category: idea.category,
+    quality: idea.quality,
+    potential: idea.potential,
+    novelty: idea.novelty,
+    hype: idea.hype,
+    ceiling: idea.ceiling ?? Math.max(82, idea.quality, idea.potential),
+    status:
+      revenue === 0
+        ? "dead"
+        : outcome === "hit"
+          ? "growing"
+          : outcome === "steady"
+            ? "steady"
+            : "declining",
+    dailyRevenue: revenue,
+    totalRevenue: 0,
+    age: 0,
+    health: clamp(
+      fit + (outcome === "hit" ? 12 : outcome === "flop" ? -18 : 0),
+    ),
+    history: [],
+    lastUpdate: "",
+    lastInvestmentDay: state.day,
+    cooldownUntilDay: state.day,
+    investment: null,
+    launchPostId: postId,
+  };
+  productHistory(
+    product,
+    state.day,
+    outcome === "flop"
+      ? "The launch audience left. A few bots are still evaluating the pricing page."
+      : "Your product is live. Paying customers now expect it to keep working.",
+  );
+  return product;
+}
+
+function advanceProducts(state, day) {
+  let paid = 0;
+  for (const product of state.products || []) {
+    product.age++;
+    if (["dead", "sunset"].includes(product.status)) continue;
+    const revenue = product.dailyRevenue;
+    paid += revenue;
+    product.totalRevenue += revenue;
+    const neglectedDays = Math.max(0, day - (product.lastInvestmentDay || 1));
+    const fit = product.quality * 0.45 + product.potential * 0.55;
+    product.health = clamp(
+      product.health +
+        (fit - 60) * 0.17 -
+        neglectedDays * 0.6 +
+        between(state, -7, 6),
+    );
+    const change = clamp(
+      (fit - 58) / 140 +
+        (product.health - 55) / 190 -
+        Math.min(0.2, neglectedDays * 0.008) +
+        (random(state) * 0.17 - 0.1),
+      -0.65,
+      0.22,
+    );
+    product.dailyRevenue = Math.min(
+      Math.round(fit * 2.8),
+      Math.round(revenue * (1 + change)),
+    );
+    if (
+      product.health < 12 ||
+      product.dailyRevenue < 2 ||
+      (revenue <= 3 && change < -0.08)
+    ) {
+      product.status = "dead";
+      product.dailyRevenue = 0;
+      productHistory(
+        product,
+        day,
+        "The last customer cancelled. The status page is now the entire product.",
+      );
+    } else {
+      product.status =
+        product.dailyRevenue > revenue
+          ? "growing"
+          : product.dailyRevenue < revenue
+            ? "declining"
+            : "steady";
+      productHistory(
+        product,
+        day,
+        product.status === "growing"
+          ? pick(state, [
+              "A customer referred a friend. Neither one is an agent.",
+              "Retention is up. Someone has made this part of their actual job.",
+              "Word of mouth is working. The mouth belongs to a paying customer.",
+            ])
+          : product.status === "declining"
+            ? pick(state, [
+                "Customers found a free alternative. It is called doing nothing.",
+                "Churn is up. The cancellation survey just says “bro”.",
+                "An abandoned bug has become your most consistent user.",
+              ])
+            : "Revenue held steady. Boring is a legitimate business model.",
+      );
+    }
+  }
+  return paid;
+}
+
+export function getProductActionInfo(state, product, mode) {
+  const spec = Object.hasOwn(PRODUCT_ACTIONS, mode)
+    ? PRODUCT_ACTIONS[mode]
+    : null;
+  if (!spec || !product)
+    return {
+      enabled: false,
+      reason: "Product unavailable.",
+      cost: 0,
+      attention: 0,
+      duration: 0,
+    };
+  const attention = Math.max(2, spec.attention - state.upgrades.context * 2);
+  let reason = "";
+  if (product.status === "sunset")
+    reason = "Retired. This product is off the clock.";
+  else if (product.investment)
+    reason = "An agent is already working on this product.";
+  else if (product.cooldownUntilDay > state.day)
+    reason = `Let the update settle. Available on day ${product.cooldownUntilDay}.`;
+  else if (mode === "revive" && product.status !== "dead")
+    reason = "Comebacks are for dead products.";
+  else if (mode !== "revive" && product.status === "dead")
+    reason = "Attempt a comeback before investing again.";
+  else if (!state.agents.some((agent) => agent.status === "idle"))
+    reason = "Free an agent by launching or binning an idea.";
+  else if (state.cash < spec.cost || state.attention < attention) {
+    const deficits = [];
+    if (state.cash < spec.cost)
+      deficits.push(`$${Math.ceil(spec.cost - state.cash)} more`);
+    if (state.attention < attention)
+      deficits.push(`${Math.ceil(attention - state.attention)} attention`);
+    reason = `Need ${deficits.join(" + ")}.`;
+  }
+  return {
+    ...spec,
+    attention,
+    duration: duration(state, spec.duration),
+    enabled: !reason,
+    reason,
+  };
+}
+
+function finishProductWork(state, agent) {
+  const task = agent.projectTask;
+  const product = state.products.find((entry) => entry.id === task.productId);
+  agent.status = "idle";
+  delete agent.projectTask;
+  agent.log =
+    "Product maintenance complete. The support inbox has briefly stopped screaming.";
+  if (!product) return;
+  const roll = random(state);
+  const before = product.dailyRevenue;
+  let note;
+  if (task.mode === "revive") {
+    const chance = clamp(
+      (product.quality + product.potential + product.ceiling - 60) / 250,
+      0.08,
+      0.76,
+    );
+    if (roll < chance) {
+      product.health = between(state, 42, 62);
+      product.dailyRevenue = Math.max(
+        3,
+        Math.round((product.quality + product.potential) * 0.12),
+      );
+      product.status = "steady";
+      note =
+        "It lives. Three former customers returned to see if you had learned anything.";
+    } else {
+      product.health = 0;
+      product.dailyRevenue = 0;
+      product.status = "dead";
+      note =
+        "Comeback failed. A new logo did not create a reason for this to exist.";
+    }
+  } else if (task.mode === "improve") {
+    if (roll < 0.22) {
+      product.quality = clamp(
+        product.quality - between(state, 3, 9),
+        0,
+        product.ceiling,
+      );
+      product.health = clamp(product.health - 9);
+      product.dailyRevenue = Math.round(before * 0.82);
+      note =
+        "The update introduced a new bug. The old bug has asked for a promotion.";
+    } else {
+      product.quality = clamp(
+        product.quality + between(state, 5, 12),
+        0,
+        product.ceiling,
+      );
+      product.health = clamp(product.health + 15);
+      product.dailyRevenue = Math.round(
+        before * (product.ceiling < 40 ? 1.03 : 1.18),
+      );
+      note =
+        product.ceiling < 40
+          ? "The product works better. Demand remains a philosophical objection."
+          : "Fixed a real pain point. Customers have downgraded you from “why” to “fine”.";
+    }
+  } else {
+    const chance = clamp(
+      (product.quality + product.potential) / 210,
+      0.08,
+      0.82,
+    );
+    if (roll < chance) {
+      product.dailyRevenue = Math.round(before * 1.3 + 3);
+      product.health = clamp(product.health + 5);
+      note =
+        "Found a tiny niche with actual wallets. The growth thread has become alarmingly accurate.";
+    } else {
+      product.dailyRevenue = Math.round(before * 0.78);
+      product.health = clamp(product.health - 10);
+      note =
+        "The campaign went viral among people explaining why they would never use it.";
+    }
+  }
+  if (task.mode !== "revive") {
+    if (product.dailyRevenue < 2 || product.health < 12) {
+      product.dailyRevenue = 0;
+      product.status = "dead";
+    } else
+      product.status =
+        product.dailyRevenue > before
+          ? "growing"
+          : product.dailyRevenue < before
+            ? "declining"
+            : "steady";
+  }
+  product.investment = null;
+  product.cooldownUntilDay = state.day + 1;
+  product.lastInvestmentDay = state.day;
+  productHistory(product, state.day, note);
+  result(
+    state,
+    product.status === "dead"
+      ? "The comeback needs a comeback."
+      : `${product.title}: update complete`,
+    `${note} Now $${product.dailyRevenue}/day.`,
+    product.dailyRevenue > before ? "success" : "danger",
+  );
+  addFeed(state, "@support_inbox", `${product.title}: ${note}`, "product");
+}
+
 function advance(state, seconds) {
   const previousDay = state.day;
   state.elapsed += seconds;
   state.day = Math.floor(state.elapsed / 60) + 1;
   // Deliberately upfront costs: unattended agents can never bankrupt a saved game.
   for (let day = previousDay; day < state.day; day++) {
-    const income = getEconomy(state).incomePerDay;
+    const sponsor = getEconomy(state).sponsorIncomePerDay;
+    const products = advanceProducts(state, day + 1);
+    const income = sponsor + products;
     state.cash += income;
     addFeed(
       state,
       "@sponsor_inbox",
-      `Day ${day + 1}: $${income} from your audience. The niche keyboard company believes in you.`,
+      `Day ${day + 1}: $${sponsor} from sponsors${products ? ` + $${products} from your products` : ""}. The passive income has active opinions.`,
       "income",
       0,
       income,
@@ -556,6 +802,10 @@ function advance(state, seconds) {
     const oldBand = Math.floor(agent.progress / 25);
     agent.progress = clamp(agent.progress + (seconds / agent.duration) * 100);
     if (agent.progress >= 100) {
+      if (agent.projectTask) {
+        finishProductWork(state, agent);
+        continue;
+      }
       agent.status = "review";
       agent.log = pick(state, [
         "Done. “Looks good to me” is not a testing strategy.",
@@ -601,27 +851,43 @@ export function stepGame(state, seconds = 1) {
 function improve(state, agent, mode, instruction) {
   const idea = agent.idea;
   const intelligence = state.upgrades.model * 2;
+  idea.ceiling ??= Math.max(82, idea.quality, idea.potential);
+  const before = { quality: idea.quality, potential: idea.potential };
+  const diminishing = 1 / (1 + idea.iteration * 0.3);
+  const failed = random(state) < 0.18;
+  const gain = (amount) => Math.max(1, Math.round(amount * diminishing));
   if (mode === "polish") {
-    idea.quality += between(state, 12, 21) + intelligence;
+    idea.quality += failed
+      ? -between(state, 3, 9)
+      : gain(between(state, 12, 21) + intelligence);
     idea.hype -= 3;
     idea.notes.push(
-      "Removed the fake button. The real button now does a real thing.",
+      failed
+        ? "The refactor broke the one useful feature. The agent suggests updating the definition of done."
+        : "Removed the fake button. The real button now does a real thing.",
     );
   } else if (mode === "validate") {
-    idea.potential += between(state, 13, 23);
-    idea.quality += between(state, 3, 8);
+    idea.potential += failed
+      ? -between(state, 6, 14)
+      : gain(between(state, 13, 23));
+    idea.quality += failed ? 0 : gain(between(state, 3, 8));
     idea.notes.push(
-      "Interviewed a user who was not your other account. Adjusted the product accordingly.",
+      failed
+        ? "Real users said they would not use this. The survey cannot be fixed with a gradient."
+        : "Interviewed a user who was not your other account. Adjusted the product accordingly.",
     );
   } else if (mode === "pivot") {
-    idea.potential = between(state, 38, 95);
+    idea.ceiling = between(state, 22, 98);
+    idea.potential = between(state, 18, idea.ceiling);
     idea.novelty = between(state, 48, 96);
     idea.quality += between(state, -7, 9);
     idea.notes.push(
-      "Same product, different customer. The domain name remains surprisingly relevant.",
+      idea.ceiling < 45
+        ? "The pivot uncovered a smaller, angrier market. Turns out the previous bad idea had competitors."
+        : "Same domain, a different problem. This opportunity has a new ceiling; the old assumptions did not survive the meeting.",
     );
   } else if (mode === "hype") {
-    idea.hype += between(state, 20, 32);
+    idea.hype += gain(between(state, 20, 32));
     idea.notes.push(
       "Added “I can’t believe this is free” to a product that costs money.",
     );
@@ -636,18 +902,43 @@ function improve(state, agent, mode, instruction) {
       /user|customer|interview|validat|market|need|price|useful/.test(text);
     const hype = /viral|hype|thread|marketin|launch|brand/.test(text);
     const novelty = /new|different|unique|novel|pivot|creative/.test(text);
-    idea.quality += (quality ? 17 : 8) + intelligence;
-    idea.potential += market ? 19 : 5;
-    idea.hype += hype ? 21 : 0;
-    idea.novelty += novelty ? 17 : 3;
+    idea.quality += failed
+      ? -between(state, 2, 8)
+      : gain((quality ? 17 : 8) + intelligence);
+    idea.potential +=
+      failed && market ? -between(state, 4, 10) : gain(market ? 19 : 5);
+    idea.hype += hype ? gain(21) : 0;
+    idea.novelty += gain(novelty ? 17 : 3);
     idea.notes.push(
-      quality || market || hype || novelty
-        ? "Specific feedback detected. Applied your requested direction. The agent seems mildly surprised."
-        : "Applied your brief as general polish. Specific mentions of users, bugs, novelty, or hype steer the outcome.",
+      failed
+        ? "The feedback was clear. The implementation was not. Some experiments teach you what to stop doing."
+        : quality || market || hype || novelty
+          ? "Specific feedback detected. Applied your requested direction. The agent seems mildly surprised."
+          : "Applied your brief as general polish. Specific mentions of users, bugs, novelty, or hype steer the outcome.",
     );
   }
   for (const key of ["quality", "novelty", "hype", "potential"])
-    idea[key] = clamp(idea[key]);
+    idea[key] = clamp(
+      idea[key],
+      0,
+      ["quality", "potential"].includes(key) ? idea.ceiling : 100,
+    );
+  idea.lastIterationOutcome =
+    idea.quality < before.quality || idea.potential < before.potential
+      ? "regressed"
+      : idea.quality >= idea.ceiling && idea.potential >= idea.ceiling
+        ? "ceiling"
+        : "improved";
+  if (
+    mode !== "hype" &&
+    mode !== "pivot" &&
+    (idea.quality >= idea.ceiling || idea.potential >= idea.ceiling)
+  )
+    idea.notes.push(
+      idea.ceiling < 45
+        ? "You have polished the turd to its structural limit. A pivot or the bin is now an engineering decision."
+        : "This direction is near its ceiling. More iteration has diminishing returns; consider launching or changing the idea.",
+    );
   idea.iteration++;
   idea.notes = idea.notes.slice(-8);
 }
@@ -669,8 +960,9 @@ function ship(state, agent, tone) {
     1 +
     idea.hype / 150 +
     (tone === "hype" ? 0.25 : tone === "unhinged" ? 0.5 : 0);
-  let followersDelta, cashDelta, title, text, kind;
+  let followersDelta, cashDelta, title, text, kind, outcome;
   if (roll < chance) {
+    outcome = "hit";
     followersDelta = Math.round(
       (130 + score * 2.1 + state.followers * 0.16) *
         viralBoost *
@@ -701,6 +993,7 @@ function ship(state, agent, tone) {
     idea.potential >= 45 &&
     roll < 0.9 - (tone === "unhinged" ? 0.12 : 0)
   ) {
+    outcome = "steady";
     followersDelta = Math.round(
       (22 + score * 0.75 + state.followers * 0.018) * viralBoost,
     );
@@ -709,6 +1002,7 @@ function ship(state, agent, tone) {
     text = `“${idea.title}” attracted a few real humans. Sustainable growth. Embarrassing for your viral strategy.`;
     kind = "success";
   } else {
+    outcome = "flop";
     const reputationRisk =
       tone === "hype" ? 0.08 : tone === "unhinged" ? 0.11 : 0.025;
     followersDelta = -Math.min(
@@ -751,7 +1045,7 @@ function ship(state, agent, tone) {
       : tone === "unhinged"
         ? "SLEEP IS A LEGACY SYSTEM. BEHOLD:"
         : "Made a thing:";
-  addFeed(
+  const post = addFeed(
     state,
     "@you",
     `${intro} ${idea.title}. ${tone === "honest" ? "It solves one small problem. Feedback welcome." : tone === "hype" ? "This changes EVERYTHING. A thread 🧵 (1/47)" : "My agents are my cofounders and my only witnesses."}`,
@@ -759,6 +1053,15 @@ function ship(state, agent, tone) {
     followersDelta,
     cashDelta,
   );
+  const product = launchedProduct(state, idea, outcome, post.id);
+  post.productId = product.id;
+  post.outcome = outcome;
+  post.comments = generateComments(idea, outcome, state.rng);
+  product.comments = structuredClone(post.comments);
+  product.launchText = post.text;
+  product.outcome = outcome;
+  state.products ??= [];
+  state.products.unshift(product);
   result(
     state,
     title,
@@ -807,16 +1110,86 @@ export function act(state, action) {
         agent.status !== "idle" ||
         next.cash < economy.startCost ||
         (action.category &&
-          !["tools", "consumer", "content", "chaos"].includes(action.category))
+          !THEMES.some((theme) => theme.id === action.category))
       )
         return state;
       next.cash -= economy.startCost;
-      agent.idea = newIdea(next, action.category);
+      agent.idea = newIdea(
+        next,
+        action.instruction
+          ? classifyTheme(action.instruction, action.category)
+          : action.category,
+      );
+      if (typeof action.instruction === "string" && action.instruction.trim()) {
+        agent.idea.lastInstruction = action.instruction.trim().slice(0, 500);
+        agent.idea.notes.push(`Your brief: ${agent.idea.lastInstruction}`);
+      }
       agent.status = "working";
       agent.progress = 0;
       agent.duration = duration(next, between(next, 22, 35));
       agent.log = pick(next, WORK_LOGS);
       break;
+    case "investProduct": {
+      const product = next.products?.find(
+        (entry) => entry.id === action.productId,
+      );
+      const info = getProductActionInfo(next, product, action.mode);
+      if (!info.enabled) return state;
+      const worker = action.id
+        ? agent
+        : next.agents.find((entry) => entry.status === "idle");
+      if (!worker || worker.status !== "idle") return state;
+      next.cash -= info.cost;
+      next.attention -= info.attention;
+      product.investment = { mode: action.mode, agentId: worker.id };
+      worker.projectTask = { productId: product.id, mode: action.mode };
+      worker.idea = {
+        id: product.ideaId,
+        title: product.title,
+        description: product.description,
+        category: product.category,
+        quality: product.quality,
+        potential: product.potential,
+        novelty: product.novelty,
+        hype: product.hype,
+        ceiling: product.ceiling,
+        notes: [product.lastUpdate],
+        iteration: 0,
+        lastInstruction: "",
+      };
+      worker.status = "working";
+      worker.progress = 0;
+      worker.duration = info.duration;
+      worker.log = `${info.label}: working on an existing product. The customers noticed.`;
+      result(
+        next,
+        `${worker.name} is on it.`,
+        `${product.title}: ${info.label.toLowerCase()}. Results in ${info.duration} simulated seconds.`,
+        "info",
+      );
+      break;
+    }
+    case "sunsetProduct": {
+      const product = next.products?.find(
+        (entry) => entry.id === action.productId,
+      );
+      if (!product || product.status === "sunset" || product.investment)
+        return state;
+      product.status = "sunset";
+      product.dailyRevenue = 0;
+      productHistory(
+        product,
+        next.day,
+        "Retired with dignity. The domain will continue billing you emotionally.",
+      );
+      result(
+        next,
+        "The product has clocked out.",
+        `${product.title} is retired. Its launch and lifetime earnings stay in your portfolio.`,
+        "info",
+      );
+      break;
+    }
     case "iterate": {
       const spec = Object.hasOwn(ACTIONS, action.mode)
         ? ACTIONS[action.mode]

@@ -33,4 +33,10 @@ The host address observed during setup was `100.72.181.81`; use the current outp
 
 Game saves live in browser local storage, scoped by origin. `http://localhost:8790` and the Tailscale URL have different saves. Rebuilding or replacing the container does not erase a browser's save. Clearing site data does.
 
+The storage key remains `slop-valley-save-v1`; version-one saves migrate to the expanded format when opened. Launches still present in the saved timeline are recovered as products with estimated starting revenue and generated discussions. Migration does not award past earnings. Products, their revenue history, investments, and comments stay in the same browser save.
+
 One application container is sufficient. Reuse the same Compose service for rebuilds. The service has a read-only root filesystem, temporary nginx write directories, a health endpoint, and bounded log rotation. There are no database files, Docker socket mounts, volumes, API keys, or external paid services.
+
+## Optional on-device writing
+
+Local Gemini is a browser capability, not a Docker service. Players explicitly enable it in settings; Chrome may then download Gemini Nano. It needs supported desktop Chrome, an available Prompt API, and localhost or HTTPS. The existing tailnet HTTP route intentionally continues to use the complete canned-content fallback. No additional route, server dependency, or API key is needed to play the expanded game. Opening localhost to try local AI uses that origin's separate save.

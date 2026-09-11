@@ -9,6 +9,7 @@ import "@fontsource/space-grotesk/600.css";
 import "@fontsource/space-grotesk/700.css";
 import App from "./App.jsx";
 import "./style.css";
+import "./expansion.css";
 
 createRoot(document.getElementById("root")).render(
   <React.StrictMode>

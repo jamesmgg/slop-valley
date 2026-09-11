@@ -13,8 +13,8 @@ export function nextReadyAgent(state, currentId) {
 }
 
 const effects = {
-  polish: "Improve usefulness. Remove imaginary features.",
-  validate: "Improve market fit. Ask an actual human.",
+  polish: "Try to improve usefulness. Bugs may breed.",
+  validate: "Test market fit. Users may reject it.",
   pivot: "Reroll the opportunity. Same questionable founder.",
   hype: "Increase reach. Expectations sold separately.",
   custom: "Steer the next draft with your own instructions.",

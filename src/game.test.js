@@ -329,3 +329,221 @@ test("long seeded play remains deterministic, finite and bounded", () => {
   }
   assert.deepEqual(run(), run());
 });
+
+test("a launch keeps a product and a linked comment thread without duplicate shipments", () => {
+  const state = review(42);
+  const agent = state.agents[0];
+  const shipped = game.act(state, {
+    type: "ship",
+    id: agent.id,
+    tone: "honest",
+  });
+  assert.equal(shipped.products?.length, 1);
+  const product = shipped.products[0];
+  assert.equal(product.ideaId, agent.idea.id);
+  assert.equal(product.title, agent.idea.title);
+  assert.ok(product.dailyRevenue >= 0);
+  const post = shipped.feed.find((entry) => entry.id === product.launchPostId);
+  assert.equal(post.productId, product.id);
+  assert.ok(post.comments.length >= 3);
+  assert.ok(post.comments.every((comment) => comment.handle && comment.text));
+  assert.deepEqual(game.act(shipped, { type: "ship", id: agent.id }), shipped);
+});
+
+test("products pay the advertised revenue once at each day boundary", () => {
+  let state = game.act(review(42), {
+    type: "ship",
+    id: review(42).agents[0].id,
+  });
+  Object.assign(state.products?.[0] || {}, {
+    dailyRevenue: 40,
+    quality: 85,
+    potential: 85,
+    health: 85,
+  });
+  const income = game.getEconomy(state);
+  assert.equal(income.productIncomePerDay, 40);
+  const next = game.stepGame(state, 60);
+  assert.equal(next.cash - state.cash, income.sponsorIncomePerDay + 40);
+  assert.equal(next.products[0].totalRevenue, 40);
+  assert.equal(next.products[0].age, 1);
+  assert.equal(game.stepGame(next, 0).cash, next.cash);
+});
+
+test("weak launched products lose revenue and die instead of growing forever", () => {
+  let state = game.act(review(91), {
+    type: "ship",
+    id: review(91).agents[0].id,
+  });
+  assert.ok(state.products?.length);
+  Object.assign(state.products[0], {
+    dailyRevenue: 8,
+    quality: 12,
+    potential: 14,
+    ceiling: 24,
+    health: 18,
+  });
+  state = game.stepGame(state, 600);
+  assert.equal(state.products[0].status, "dead");
+  assert.equal(state.products[0].dailyRevenue, 0);
+  const oldTotal = state.products[0].totalRevenue;
+  state = game.stepGame(state, 60);
+  assert.equal(state.products[0].totalRevenue, oldTotal);
+});
+
+test("product investment occupies a free agent then resolves without launching again", () => {
+  let state = game.act(review(12), {
+    type: "ship",
+    id: review(12).agents[0].id,
+  });
+  assert.equal(typeof game.getProductActionInfo, "function");
+  const product = state.products[0];
+  Object.assign(product, {
+    status: "steady",
+    dailyRevenue: 30,
+    health: 60,
+    quality: 60,
+    potential: 70,
+    ceiling: 90,
+  });
+  const info = game.getProductActionInfo(state, product, "improve");
+  assert.equal(info.enabled, true);
+  const invested = game.act(state, {
+    type: "investProduct",
+    productId: product.id,
+    mode: "improve",
+  });
+  assert.equal(invested.cash, state.cash - info.cost);
+  assert.equal(invested.agents[0].status, "working");
+  assert.equal(invested.agents[0].projectTask.productId, product.id);
+  assert.equal(invested.products[0].investment.agentId, state.agents[0].id);
+  assert.deepEqual(
+    game.act(invested, {
+      type: "investProduct",
+      productId: product.id,
+      mode: "improve",
+    }),
+    invested,
+  );
+  assert.deepEqual(
+    game.act(invested, { type: "sunsetProduct", productId: product.id }),
+    invested,
+  );
+  const done = game.stepGame(invested, info.duration);
+  assert.equal(done.agents[0].status, "idle");
+  assert.equal(done.products[0].investment, null);
+  assert.equal(done.shipped, 1);
+  assert.equal(done.products.length, 1);
+  assert.ok(done.products[0].history.length > product.history.length);
+  assert.equal(
+    game.getProductActionInfo(done, done.products[0], "improve").enabled,
+    false,
+  );
+});
+
+test("revivals are uncertain and retired products cannot be used as an income exploit", () => {
+  let revived = 0,
+    failed = 0;
+  for (let seed = 1; seed <= 60; seed++) {
+    let state = game.act(review(seed), {
+      type: "ship",
+      id: review(seed).agents[0].id,
+    });
+    assert.ok(state.products?.length);
+    const product = state.products[0];
+    Object.assign(product, {
+      status: "dead",
+      dailyRevenue: 0,
+      health: 0,
+      quality: 55,
+      potential: 55,
+      ceiling: 70,
+    });
+    state = game.act(state, {
+      type: "investProduct",
+      productId: product.id,
+      mode: "revive",
+    });
+    state = game.stepGame(state, 40);
+    if (state.products[0].status === "dead") failed++;
+    else revived++;
+    const sunset = game.act(state, {
+      type: "sunsetProduct",
+      productId: product.id,
+    });
+    assert.equal(sunset.products[0].status, "sunset");
+    assert.equal(sunset.products[0].dailyRevenue, 0);
+    assert.deepEqual(
+      game.act(sunset, {
+        type: "investProduct",
+        productId: product.id,
+        mode: "revive",
+      }),
+      sunset,
+    );
+  }
+  assert.ok(
+    revived > 0 && failed > 0,
+    `${revived} recoveries, ${failed} failed revivals`,
+  );
+});
+
+test("a doomed idea cannot be polished past its ceiling and repetition diminishes returns", () => {
+  let state = review(91);
+  state.cash = 100000;
+  Object.assign(state.agents[0].idea, {
+    quality: 20,
+    potential: 20,
+    ceiling: 30,
+  });
+  for (let index = 0; index < 12; index++) {
+    state.attention = 100;
+    state.agents[0].status = "review";
+    state = game.act(state, {
+      type: "iterate",
+      id: state.agents[0].id,
+      mode: index % 2 ? "validate" : "polish",
+    });
+    assert.ok(state.agents[0].idea.quality <= 30);
+    assert.ok(state.agents[0].idea.potential <= 30);
+  }
+  const lowIteration = review(51);
+  const highIteration = structuredClone(lowIteration);
+  highIteration.agents[0].idea.iteration = 12;
+  const lowGain =
+    game.act(lowIteration, {
+      type: "iterate",
+      id: lowIteration.agents[0].id,
+      mode: "polish",
+    }).agents[0].idea.quality - lowIteration.agents[0].idea.quality;
+  const highGain =
+    game.act(highIteration, {
+      type: "iterate",
+      id: highIteration.agents[0].id,
+      mode: "polish",
+    }).agents[0].idea.quality - highIteration.agents[0].idea.quality;
+  assert.ok(highGain < lowGain);
+});
+
+test("some iterations regress and a pivot can uncover a worse opportunity", () => {
+  let regressions = 0,
+    failedPivots = 0;
+  for (let seed = 1; seed <= 80; seed++) {
+    const state = review(seed);
+    const before = state.agents[0].idea;
+    const polished = game.act(state, {
+      type: "iterate",
+      id: state.agents[0].id,
+      mode: "polish",
+    });
+    if (polished.agents[0].idea.quality < before.quality) regressions++;
+    const pivoted = game.act(state, {
+      type: "iterate",
+      id: state.agents[0].id,
+      mode: "pivot",
+    });
+    if (pivoted.agents[0].idea.potential < before.potential) failedPivots++;
+  }
+  assert.ok(regressions > 0 && regressions < 45);
+  assert.ok(failedPivots > 0);
+});

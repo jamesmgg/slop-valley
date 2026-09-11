@@ -39,6 +39,7 @@ import {
   ListChecks,
   ChevronDown,
   LockKeyhole,
+  MessageCircle,
 } from "lucide-react";
 import {
   createGame,
@@ -50,6 +51,10 @@ import {
 } from "./game.js";
 import { readSave, writeSave, readFlag } from "./storage.js";
 import { nextReadyAgent, feedbackInfo } from "./workbench.js";
+import Products, { Discussion } from "./Products.jsx";
+import { THEMES } from "./content.js";
+import { createLocalAI } from "./local-ai.js";
+import { playCue } from "./sound.js";
 
 const money = (value) => "$" + Math.floor(value).toLocaleString();
 const count = (value) => Math.floor(value).toLocaleString();
@@ -195,12 +200,19 @@ function AgentCard({ agent, index, selected, onClick }) {
         </span>
       </div>
       <div className="agent-name">
-        <h3>{agent.name}</h3>
-        <span>#{String(index + 1).padStart(2, "0")}</span>
+        <strong className="agent-project-title">
+          {agent.status === "idle"
+            ? "Ready for new work"
+            : agent.idea?.title || "Next questionable venture"}
+        </strong>
       </div>
-      <p className="persona">{agent.persona}</p>
+      <p className="agent-owner">{agent.name}</p>
       <div className="agent-task">
-        {agent.idea?.title || "No thoughts. Head empty."}
+        {agent.projectTask
+          ? "Maintaining a live product"
+          : agent.status === "idle"
+            ? "Ready for a fresh idea or product work"
+            : agent.persona}
       </div>
       <div className="agent-bottom">
         {agent.status === "working" ? (
@@ -233,7 +245,7 @@ function AgentCard({ agent, index, selected, onClick }) {
   );
 }
 
-function FeedItem({ item }) {
+function FeedItem({ item, onOpen }) {
   const positive = item.followersDelta > 0;
   return (
     <article className="feed-item">
@@ -256,6 +268,16 @@ function FeedItem({ item }) {
         </div>
         <p>{item.text}</p>
         <div className="feed-reaction">
+          {item.comments?.length > 0 && (
+            <button
+              className="comment-trigger"
+              onClick={() => onOpen(item)}
+              aria-label={`Read ${item.comments.length} comments on ${item.productTitle || "this launch"}`}
+            >
+              <MessageCircle size={14} />
+              {item.comments.length} replies <ChevronRight size={13} />
+            </button>
+          )}
           {item.followersDelta !== 0 &&
             Number.isFinite(item.followersDelta) && (
               <span className={positive ? "positive" : "negative"}>
@@ -292,7 +314,17 @@ export default function App() {
   const [readyNotice, setReadyNotice] = useState(null);
   const [tone, setTone] = useState("honest");
   const [category, setCategory] = useState("tools");
+  const [brief, setBrief] = useState("");
+  const [discussion, setDiscussion] = useState(null);
   const [muted, setMuted] = useState(true);
+  const [aiStatus, setAiStatus] = useState({
+    availability: "unavailable",
+    enabled: false,
+    busy: false,
+    reason: "Checking local creativity…",
+  });
+  const localAI = useRef(null);
+  const careerEpoch = useRef(0);
   const [saved, setSaved] = useState(true);
   const [showTip, setShowTip] = useState(
     () => !readFlag(browserStorage, "slop-valley-tip"),
@@ -330,25 +362,23 @@ export default function App() {
       : game.agents;
   const blocked = Boolean(modal || game.event || hidden);
   const resultKey = game.lastResult ? JSON.stringify(game.lastResult) : "";
+  const activeDiscussion = discussion
+    ? {
+        product:
+          game.products?.find((p) => p.id === discussion.product?.id) ||
+          discussion.product,
+        post:
+          game.feed.find((p) => p.id === discussion.post?.id) ||
+          discussion.post,
+      }
+    : null;
 
-  function chime() {
+  function chime(cue = "tap") {
     if (muted) return;
     try {
       audio.current ||= new (window.AudioContext ||
         window.webkitAudioContext)();
-      const ctx = audio.current;
-      ctx.resume();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.type = "sine";
-      osc.frequency.setValueAtTime(620, ctx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.09);
-      gain.gain.setValueAtTime(0.035, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.16);
-      osc.start();
-      osc.stop(ctx.currentTime + 0.17);
+      playCue(audio.current, cue);
     } catch {
       /* sound is optional */
     }
@@ -366,19 +396,102 @@ export default function App() {
         !(autoSwitch && nextReadyAgent(gameRef.current, action.id)))
     )
       setTab("all");
-    setGame((current) => {
-      let next = act(current, action);
-      if (
-        autoSwitch &&
-        ["iterate", "ship", "trash", "start"].includes(action.type) &&
-        next !== current
-      ) {
-        const candidate = nextReadyAgent(next, action.id);
-        if (candidate) next = act(next, { type: "select", id: candidate.id });
-      }
-      return next;
-    });
-    chime();
+    const current = gameRef.current;
+    let next = act(current, action);
+    if (
+      autoSwitch &&
+      ["iterate", "ship", "trash", "start"].includes(action.type) &&
+      next !== current
+    ) {
+      const candidate = nextReadyAgent(next, action.id);
+      if (candidate) next = act(next, { type: "select", id: candidate.id });
+    }
+    gameRef.current = next;
+    setGame(next);
+    if (next !== current) {
+      chime(
+        action.type === "ship"
+          ? next.lastResult?.kind === "danger"
+            ? "failure"
+            : "success"
+          : action.type === "trash" || action.type === "sunsetProduct"
+            ? "trash"
+            : action.type === "investProduct" ||
+                action.type === "upgrade" ||
+                action.type === "spawn"
+              ? "invest"
+              : action.type === "break"
+                ? "rest"
+                : action.type === "grant"
+                  ? "income"
+                  : "tap",
+      );
+      if (aiStatus.enabled) enrichNarrative(action, next);
+    }
+  }
+  async function enrichNarrative(action, state) {
+    const epoch = careerEpoch.current;
+    if (
+      action.type === "start" ||
+      (action.type === "iterate" && action.mode === "custom")
+    ) {
+      const target = state.agents.find((agent) => agent.id === action.id);
+      if (!target?.idea || target.status !== "working") return;
+      const ideaId = target.idea.id,
+        revision = target.idea.iteration;
+      const generated = await localAI.current?.generateIdea({
+        theme: target.idea.category,
+        instruction: action.instruction || "",
+        existingIdea: target.idea,
+      });
+      if (!generated || epoch !== careerEpoch.current) return;
+      setGame((current) => {
+        const agent = current.agents.find((a) => a.id === action.id);
+        if (
+          !agent?.idea ||
+          agent.status === "idle" ||
+          agent.idea.id !== ideaId ||
+          agent.idea.iteration !== revision ||
+          agent.projectTask
+        )
+          return current;
+        const next = structuredClone(current),
+          updated = next.agents.find((a) => a.id === action.id);
+        Object.assign(updated.idea, {
+          title: generated.title,
+          description: generated.description,
+          narrativeSource: "gemini",
+        });
+        updated.idea.notes = [...updated.idea.notes, generated.log].slice(-8);
+        updated.log = generated.log;
+        return next;
+      });
+    } else if (action.type === "ship") {
+      const product = state.products?.[0];
+      if (!product) return;
+      const comments = await localAI.current?.generateComments({
+        idea: product,
+        outcome: product.outcome,
+      });
+      if (!comments || epoch !== careerEpoch.current) return;
+      setGame((current) => {
+        if (!current.products.some((p) => p.id === product.id)) return current;
+        const next = structuredClone(current),
+          updated = next.products.find((p) => p.id === product.id);
+        updated.comments = updated.comments.map((comment, index) =>
+          index < comments.length
+            ? {
+                ...comment,
+                text: comments[index],
+                handle: `@local_reply_${index + 1}`,
+              }
+            : comment,
+        );
+        const post = next.feed.find((item) => item.id === updated.launchPostId);
+        if (post) post.comments = structuredClone(updated.comments);
+        return next;
+      });
+    }
   }
   function goNextReady() {
     const agent = nextReadyAgent(
@@ -395,10 +508,45 @@ export default function App() {
     setTone("honest");
     setModal("ship");
   }
+  function openDiscussion(item) {
+    const product = gameRef.current.products?.find(
+      (p) => p.id === (item.productId || item.id),
+    );
+    const post =
+      item.comments && item.handle
+        ? item
+        : gameRef.current.feed.find((p) => p.id === product?.launchPostId);
+    setDiscussion({ post, product });
+    setModal("discussion");
+  }
+  function startIdea() {
+    dispatch({ type: "start", id: selected.id, category, instruction: brief });
+  }
   function navigate(viewName) {
     setView(viewName);
     window.scrollTo({ top: 0, behavior: "instant" });
   }
+  useEffect(() => {
+    let active = true;
+    const client = createLocalAI({
+      onStatus: (status) => {
+        if (active) setAiStatus(status);
+      },
+    });
+    localAI.current = client;
+    client.getStatus();
+    return () => {
+      active = false;
+      client.disable();
+    };
+  }, []);
+  const previousWorld = useRef({ day: game.day, event: game.event?.id });
+  useEffect(() => {
+    if (game.event?.id && game.event.id !== previousWorld.current.event)
+      chime("event");
+    else if (game.day > previousWorld.current.day) chime("income");
+    previousWorld.current = { day: game.day, event: game.event?.id };
+  }, [game.day, game.event?.id]);
   useEffect(() => {
     const handler = () => setHidden(document.hidden);
     document.addEventListener("visibilitychange", handler);
@@ -498,6 +646,13 @@ export default function App() {
     previousSelected.current = selected.id;
   }, [selected.id, tab, view]);
   useEffect(() => {
+    const productFinished = game.agents.some(
+      (agent) =>
+        agent.status === "idle" &&
+        previousStatuses.current[agent.id] === "working",
+    );
+    if (productFinished)
+      chime(game.lastResult?.kind === "danger" ? "failure" : "success");
     const finished = game.agents.filter(
       (agent) =>
         agent.status === "review" &&
@@ -509,9 +664,15 @@ export default function App() {
         text:
           finished.length > 1
             ? `${finished.length} agents finished. Your move.`
-            : `${finished[0].name} is ready.`,
+            : `${finished[0].idea?.title || finished[0].name} is ready.`,
       });
-      chime();
+      chime(
+        finished.some(
+          (agent) => agent.idea?.lastIterationOutcome === "regressed",
+        )
+          ? "failure"
+          : "ready",
+      );
     }
     previousStatuses.current = Object.fromEntries(
       game.agents.map((agent) => [agent.id, agent.status]),
@@ -604,6 +765,15 @@ export default function App() {
             <Zap size={19} />
             The upgrade trap
           </button>
+          <button
+            className={view === "products" ? "nav-item active" : "nav-item"}
+            aria-label="Products"
+            onClick={() => navigate("products")}
+          >
+            <BriefcaseBusiness size={19} />
+            Products
+            <span className="nav-count">{game.products?.length || 0}</span>
+          </button>
         </nav>
         <div className="sidebar-goal">
           <Trophy size={23} />
@@ -623,6 +793,10 @@ export default function App() {
           )}
         </div>
         <div className="sidebar-bottom">
+          <button className="nav-item" onClick={() => setModal("more")}>
+            <SlidersHorizontal size={18} />
+            Sound & creativity
+          </button>
           <button className="nav-item" onClick={() => setModal("help")}>
             <HelpCircle size={18} />
             How to be a visionary
@@ -731,12 +905,16 @@ export default function App() {
               <h1>
                 {view === "history"
                   ? "Receipts of the grind."
-                  : "Mission control."}
+                  : view === "products"
+                    ? "The maintenance era."
+                    : "Mission control."}
               </h1>
               <p>
                 {view === "history"
                   ? "Every launch, every ratio, every suspiciously generous sponsor."
-                  : "Your agents are cooking. Whether it’s edible is your problem."}
+                  : view === "products"
+                    ? "You wanted passive income. The income has requests."
+                    : "Your agents are cooking. Whether it’s edible is your problem."}
               </p>
             </div>
             <div className="time-controls">
@@ -969,6 +1147,15 @@ export default function App() {
                           Preferably something with a business model. Let’s not
                           get carried away.
                         </p>
+                        {game.products?.length > 0 && (
+                          <button
+                            className="secondary-button idle-products"
+                            onClick={() => navigate("products")}
+                          >
+                            <BriefcaseBusiness size={16} />
+                            Work on a launched product <ArrowRight size={16} />
+                          </button>
+                        )}
                         <label htmlFor="category">
                           Send the agent down a rabbit hole
                         </label>
@@ -977,28 +1164,30 @@ export default function App() {
                           value={category}
                           onChange={(e) => setCategory(e.target.value)}
                         >
-                          <option value="tools">
-                            Developer tools — fix a real annoyance
-                          </option>
-                          <option value="consumer">
-                            Consumer apps — the next big thing, again
-                          </option>
-                          <option value="content">
-                            Content — thought leadership on demand
-                          </option>
-                          <option value="chaos">
-                            Chaos mode — let the model cook
-                          </option>
+                          {THEMES.map((theme) => (
+                            <option key={theme.id} value={theme.id}>
+                              {theme.label}
+                            </option>
+                          ))}
                         </select>
+                        <label htmlFor="idea-brief">
+                          A brief, if you have an actual thought
+                        </label>
+                        <input
+                          id="idea-brief"
+                          className="idea-brief"
+                          maxLength={300}
+                          value={brief}
+                          onChange={(e) => setBrief(e.target.value)}
+                          placeholder="A game for cats, less crypto, more snacks…"
+                        />
+                        <p className="brief-hint">
+                          Optional. Theme words steer the idea pool. Agents
+                          still have questionable taste.
+                        </p>
                         <button
                           className="primary-button"
-                          onClick={() =>
-                            dispatch({
-                              type: "start",
-                              id: selected.id,
-                              category,
-                            })
-                          }
+                          onClick={startIdea}
                           disabled={game.cash < economy.startCost}
                         >
                           <Play size={16} />
@@ -1036,6 +1225,12 @@ export default function App() {
                             </span>
                           </div>
                           <p className="idea-description">{idea.description}</p>
+                          {idea.narrativeSource === "gemini" && (
+                            <p className="ai-status-note">
+                              Flavor by local Gemini. Your questionable
+                              decisions remain your own.
+                            </p>
+                          )}
                           <div className="idea-metrics">
                             <Meter
                               label="Actual usefulness"
@@ -1063,21 +1258,40 @@ export default function App() {
                             )}
                             <span>
                               <strong>
-                                {idea.quality < 55
-                                  ? "Fix the product before the pitch."
-                                  : idea.potential < 50
-                                    ? "Find a customer before a cofounder."
-                                    : idea.quality >= 70
-                                      ? "Worth an honest launch."
-                                      : "Promising. One more polish could help."}
+                                {idea.ceiling < 45
+                                  ? "You cannot polish a turd. Pivot or bin it."
+                                  : idea.quality >= idea.ceiling - 3
+                                    ? "Near its ceiling. More prompts won’t create demand."
+                                    : idea.quality < 55
+                                      ? "Fix the product before the pitch."
+                                      : idea.potential < 50
+                                        ? "Find a customer before a cofounder."
+                                        : idea.quality >= 70
+                                          ? "Worth an honest launch."
+                                          : "Promising. One more polish could help."}
                               </strong>
                               <small>
                                 {game.attention < 30
                                   ? "Low attention hurts launch odds. A break will help."
-                                  : `Market fit ${Math.round(idea.potential)}/100 · ${idea.iteration || 0} revisions · no guarantees, naturally.`}
+                                  : `Market fit ${Math.round(idea.potential)}/100 · concept ceiling ${Math.round(idea.ceiling || 100)}/100 · ${idea.iteration || 0} revisions`}
                               </small>
                             </span>
                           </div>
+                          {selected.status === "review" &&
+                            idea.lastIterationOutcome && (
+                              <p
+                                className={`iteration-verdict ${idea.lastIterationOutcome}`}
+                              >
+                                <strong>
+                                  {idea.lastIterationOutcome === "regressed"
+                                    ? "That made it worse."
+                                    : idea.lastIterationOutcome === "ceiling"
+                                      ? "The ceiling has entered the chat."
+                                      : "Iteration complete."}
+                                </strong>{" "}
+                                {idea.notes?.at(-1)}
+                              </p>
+                            )}
                           <details className="review-details" key={idea.id}>
                             <summary>
                               Agent notes &amp; market read{" "}
@@ -1135,9 +1349,11 @@ export default function App() {
                                 <span className="spinner" />
                                 <strong>
                                   Agent is{" "}
-                                  {idea.iteration
-                                    ? "incorporating your very specific feedback"
-                                    : "turning tokens into a business model"}
+                                  {selected.projectTask
+                                    ? "investing in your live product"
+                                    : idea.iteration
+                                      ? "incorporating your very specific feedback"
+                                      : "turning tokens into a business model"}
                                   …
                                 </strong>
                                 <span>{Math.round(selected.progress)}%</span>
@@ -1321,7 +1537,13 @@ export default function App() {
                     {game.feed.length ? (
                       game.feed
                         .slice(0, 7)
-                        .map((item) => <FeedItem key={item.id} item={item} />)
+                        .map((item) => (
+                          <FeedItem
+                            key={item.id}
+                            item={item}
+                            onOpen={openDiscussion}
+                          />
+                        ))
                     ) : (
                       <div className="feed-empty">
                         <Megaphone size={28} />
@@ -1371,6 +1593,13 @@ export default function App() {
                 </div>
               </section>
             </>
+          ) : view === "products" ? (
+            <Products
+              game={game}
+              dispatch={dispatch}
+              onDiscussion={openDiscussion}
+              onWorkbench={() => navigate("workbench")}
+            />
           ) : (
             <section className="history-panel">
               <div className="history-stats">
@@ -1405,7 +1634,9 @@ export default function App() {
               )}
               <h2>The public record</h2>
               {game.feed.length ? (
-                game.feed.map((item) => <FeedItem key={item.id} item={item} />)
+                game.feed.map((item) => (
+                  <FeedItem key={item.id} item={item} onOpen={openDiscussion} />
+                ))
               ) : (
                 <p>
                   Your first launch is still ahead of you. Go make something
@@ -1478,9 +1709,7 @@ export default function App() {
             <button
               className="primary-button"
               disabled={game.cash < economy.startCost}
-              onClick={() =>
-                dispatch({ type: "start", id: selected.id, category })
-              }
+              onClick={startIdea}
             >
               <Play size={17} />
               {game.cash < economy.startCost
@@ -1526,6 +1755,14 @@ export default function App() {
           <Zap size={20} />
           <span>Upgrades</span>
         </button>
+        <button
+          aria-label="Products"
+          aria-current={view === "products" ? "page" : undefined}
+          onClick={() => navigate("products")}
+        >
+          <BriefcaseBusiness size={20} />
+          <span>Products</span>
+        </button>
         <button onClick={() => setModal("more")}>
           <MoreHorizontal size={21} />
           <span>More</span>
@@ -1552,6 +1789,23 @@ export default function App() {
             <X size={16} />
           </button>
         </div>
+      )}
+
+      {modal === "discussion" && activeDiscussion && (
+        <Modal
+          title="The replies are in."
+          eyebrow="Never read the comments. Anyway."
+          onClose={() => setModal(null)}
+          className="discussion-modal"
+        >
+          <Discussion
+            {...activeDiscussion}
+            onProduct={() => {
+              setModal(null);
+              navigate("products");
+            }}
+          />
+        </Modal>
       )}
 
       {modal === "ship" && idea && (
@@ -1620,7 +1874,8 @@ export default function App() {
           </div>
           <p className="modal-footnote">
             This posts inside the game. Outcomes depend on the idea, your
-            attention, your launch style, and luck.
+            attention, your launch style, and luck. After launch, manage this
+            product in Products to earn recurring revenue.
           </p>
           <button
             className="ship-button full-width"
@@ -1751,6 +2006,48 @@ export default function App() {
               <ChevronRight size={17} />
             </button>
           </div>
+          <div className="creativity-panel">
+            <h3>A local imagination, optionally.</h3>
+            <p>
+              {THEMES.length} themes, 168 hand-written ideas, and hundreds of
+              contextual replies are included. Optional Gemini in Chrome can
+              write fresh ideas, custom-feedback revisions, and launch replies
+              on your device.
+            </p>
+            <p className="ai-status" role="status">
+              {aiStatus.reason}
+            </p>
+            {aiStatus.progress !== null &&
+              aiStatus.progress !== undefined &&
+              aiStatus.busy && (
+                <p>Model download: {Math.round(aiStatus.progress * 100)}%</p>
+              )}
+            {aiStatus.enabled ? (
+              <button onClick={() => localAI.current?.disable()}>
+                Use canned creativity
+              </button>
+            ) : aiStatus.availability !== "unavailable" ? (
+              <button
+                className="primary-button"
+                disabled={aiStatus.busy}
+                onClick={() => localAI.current?.enable()}
+              >
+                {aiStatus.busy
+                  ? "Preparing local Gemini…"
+                  : "Enable local Gemini"}
+              </button>
+            ) : (
+              <button
+                onClick={() => localAI.current?.getStatus({ refresh: true })}
+              >
+                Check this browser again
+              </button>
+            )}
+            <p className="ai-status-note">
+              Enabling may download Chrome’s local model. No API key or paid
+              calls. If unavailable or busy, the game uses its built-in satire.
+            </p>
+          </div>
           <p className="modal-footnote">
             {saved
               ? "Your career saves automatically in this browser."
@@ -1787,9 +2084,11 @@ export default function App() {
                 <strong>Supply the missing brain cell.</strong>
                 <p>
                   Inspect usefulness, originality, and hype. Polish improves
-                  execution; validate catches slop; pivot changes the
-                  opportunity; hype buys reach. Custom feedback recognizes words
-                  like “test”, “simple”, “pivot”, and “viral”.
+                  execution, sometimes badly; validate can expose a dead end;
+                  pivot changes the opportunity; hype buys reach. Custom
+                  feedback recognizes words like “test”, “simple”, “pivot”, and
+                  “viral”. Every concept has a ceiling. Repeating the same
+                  feedback gives diminishing returns.
                 </p>
               </span>
             </div>
@@ -1809,9 +2108,12 @@ export default function App() {
               <span>
                 <strong>Reinvest in the bit.</strong>
                 <p>
-                  Followers attract daily sponsorships. Upgrade models and
-                  context or hire up to eight agents. Reach 10,000 followers and
-                  three breakout launches to win, then keep playing.
+                  Launched products live in Products. Assign idle agents to
+                  improve, market, or revive them. Revenue changes each day;
+                  some concepts stay dead. Followers also attract daily
+                  sponsorships. Upgrade models and context or hire up to eight
+                  agents. Reach 10,000 followers and three breakout launches to
+                  win, then keep playing.
                 </p>
               </span>
             </div>
@@ -1842,8 +2144,9 @@ export default function App() {
           </div>
           <p className="modal-footnote">
             Autosaved locally. Reopening the game starts paused. Time also
-            pauses while a dialog is open or the tab is hidden. No real AI
-            calls, bills, or social posts.
+            pauses while a dialog is open or the tab is hidden. All bills and
+            social posts are fictional. Optional Chrome AI writes flavor text
+            locally when supported.
           </p>
           <button
             className="primary-button full-width"
@@ -1871,6 +2174,8 @@ export default function App() {
             <button
               className="danger-button"
               onClick={() => {
+                careerEpoch.current++;
+                localAI.current?.disable();
                 setGame(createGame());
                 setView("workbench");
                 setTab("all");

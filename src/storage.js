@@ -1,3 +1,5 @@
+import { migrateGame } from "./game.js";
+
 export const SAVE_KEY = "slop-valley-save-v1";
 export function readFlag(storage, key) {
   try {
@@ -12,10 +14,44 @@ export function readSave(storage, fallback) {
     const base = fallback();
     if (
       !value ||
-      value.version !== 1 ||
+      ![1, 2].includes(value.version) ||
       !Array.isArray(value.agents) ||
       value.agents.length < 1 ||
       value.agents.length > 8
+    )
+      return base;
+    if (
+      value.version === 2 &&
+      (!Array.isArray(value.products) ||
+        !value.products.every(
+          (product) =>
+            product &&
+            typeof product.id === "string" &&
+            typeof product.title === "string" &&
+            ["growing", "steady", "declining", "dead", "sunset"].includes(
+              product.status,
+            ) &&
+            [
+              "dailyRevenue",
+              "totalRevenue",
+              "age",
+              "health",
+              "ceiling",
+              "quality",
+              "potential",
+            ].every(
+              (key) => Number.isFinite(product[key]) && product[key] >= 0,
+            ) &&
+            Array.isArray(product.history) &&
+            Array.isArray(product.comments) &&
+            (!product.investment ||
+              value.agents.some(
+                (agent) =>
+                  agent.id === product.investment.agentId &&
+                  agent.status === "working" &&
+                  agent.projectTask?.productId === product.id,
+              )),
+        ))
     )
       return base;
     if (
@@ -52,7 +88,8 @@ export function readSave(storage, fallback) {
       !["model", "context"].every((key) => Number.isFinite(value.upgrades[key]))
     )
       return base;
-    return { ...base, ...value, paused: true, lastResult: null };
+    const migrated = migrateGame({ ...base, ...value });
+    return { ...migrated, paused: true, lastResult: null };
   } catch {
     return fallback();
   }
